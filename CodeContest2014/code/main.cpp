@@ -242,10 +242,38 @@ static inline void create_FriendNodeDataT(FriendsT* fr, FriendNodeT* f, char kin
     }
 }
 
+#define POOL_SIZE 4096
+
+typedef struct _nodePoolS {
+    FriendNodeT arr[POOL_SIZE];
+    int free_pos;
+    struct _nodePoolS* next;
+} nodePoolT;
+
+nodePoolT* free_nodes = NULL;
+
+static inline FriendNodeT* malloc_node(char kind)
+{
+    FriendNodeT* node = NULL;
+    if (kind > 0 ) {
+        node = (FriendNodeT*)malloc(sizeof(FriendNodeT));
+    } else {
+        if (!(free_nodes && free_nodes->free_pos < POOL_SIZE)) {
+            nodePoolT* pool = (nodePoolT*) malloc(sizeof(nodePoolT));
+            pool->free_pos = 0;
+            pool->next     = free_nodes;
+            free_nodes     = pool;
+        }
+        node = &free_nodes->arr[free_nodes->free_pos++];
+    }
+    return node;
+}
+
 static inline FriendNodeT* create_FriendNodeT(FriendsT* fr, int i, char kind)
 {
     FriendNodeT* f = NULL;
-    f           = (FriendNodeT*)malloc(sizeof(FriendNodeT));
+    //f           = (FriendNodeT*)malloc(sizeof(FriendNodeT));
+    f           = malloc_node(kind);
     f->id       = i;
     f->root     = f;
     f->rootData = NULL;
@@ -271,10 +299,11 @@ void print_FriendNodeT( FriendNodeT* f )
     fflush(stdout);
 }
 
+#define INIT_SIZE 2
 FriendsT *init_FriendsT( FriendsT* f )
 {
-    f->peopleArr = (FriendNodeT**)CALLOC(2*sizeof(FriendNodeT));
-    f->arrCnt    = 2;
+    f->peopleArr = (FriendNodeT**)CALLOC(INIT_SIZE*sizeof(FriendNodeT));
+    f->arrCnt    = INIT_SIZE;
     f->noPeople  = 0;
     f->sme_arr   = NULL;
     //f->nh_sm_bits = NULL;
@@ -551,6 +580,51 @@ void update_terminal_conn(FriendsT* fr, FriendNodeT* lf, FriendNodeT* rf)
     }
 }
 
+#if 0
+static inline int mystrtol( char * __restrict__ s, char ** endPtr, char endC )
+{
+    //register int64_t num(0);
+    //register size_t pos(0);
+    int len;
+    int val = 0;
+    *endPtr = strchr(s, endC);
+    **endPtr = '\0';
+    len = strlen(s);
+    switch (len) { // handle up to 10 digits
+        case 10:    val += (s[len-10] - '0') * 1000000000;
+        case  9:    val += (s[len- 9] - '0') * 100000000;
+        case  8:    val += (s[len- 8] - '0') * 10000000;
+        case  7:    val += (s[len- 7] - '0') * 1000000;
+        case  6:    val += (s[len- 6] - '0') * 100000;
+        case  5:    val += (s[len- 5] - '0') * 10000;
+        case  4:    val += (s[len- 4] - '0') * 1000;
+        case  3:    val += (s[len- 3] - '0') * 100;
+        case  2:    val += (s[len- 2] - '0') * 10;
+        case  1:    val += (s[len- 1] - '0');
+    }
+    return val;
+}
+
+#else
+static inline int mystrtol( char * __restrict__ s, char ** endPtr, char endC )
+{
+    //register int64_t num(0);
+    //register size_t pos(0);
+    int len;
+    int val = 0;
+    char *p = s;
+    //*endPtr = strchr(s, endC);
+    //len = *endPtr - s;
+    for (; *p != endC; ++p) {
+    //for (int i = 0; i < len; ++i) {
+    //val = val*10 + (*p++ - '0');
+        val = val*10 + (*p - '0');
+    }
+    *endPtr = p;
+    return val;
+}
+#endif
+
 void parseLine(char* buf, FriendsT* fr, int type, bool isgraph, int lines)
 {
     char* endPtr = NULL;
@@ -559,7 +633,8 @@ void parseLine(char* buf, FriendsT* fr, int type, bool isgraph, int lines)
     if (isgraph == false) {
         int id = 0;
         errno = 0;
-        id = strtol(str, &endPtr, 10);
+        //id = strtol(str, &endPtr, 10);
+        id = mystrtol(str, &endPtr, '\0');
         if (errno == 0) {
             FriendNodeT* p = addPerson(fr, id, type);
         }
@@ -570,10 +645,12 @@ void parseLine(char* buf, FriendsT* fr, int type, bool isgraph, int lines)
         //if (strstr(buf, "}")) return;
         if (str[0] == '}') return;
         errno = 0;
-        l = strtol(str, &endPtr, 10);
+        //l = strtol(str, &endPtr, 10);
+        l = mystrtol(str, &endPtr, '-');
         str = endPtr + 2;
         errno = 0;
-        r = strtol(str, &endPtr, 10);
+        //r = strtol(str, &endPtr, 10);
+        r = mystrtol(str, &endPtr, '\0');
         if (errno == 0) {
             FriendNodeT* lf = addPerson( fr, l, 0 );
             FriendNodeT* rf = addPerson( fr, r, 0 );
@@ -887,13 +964,16 @@ int myMain(int argc, char* argv[])
     printPeople(&f);
     RECORD_TIME_SEGMENT("Print Info");
 #endif
-//    test_bitsets(&f);
-    dumpConns(&f);
-    if (argc == 4) {
-//        printConnections(&f);
-        //printf("\n No. of connected(): %d\n", conn_cnt);
-        //printf("\n No. of compressed(): %d\n", cnt_cn);
+    free(f.peopleArr);
+#if 0
+    while( free_nodes) {
+        nodePoolT* p = free_nodes;
+        free_nodes = p->next;
+        free(p);
     }
+#endif
+    RECORD_TIME_SEGMENT("Free Mem");
+    dumpConns(&f);
     RECORD_TIME_SEGMENT("printConnections");
 }
 
