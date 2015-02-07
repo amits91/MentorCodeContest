@@ -3,6 +3,7 @@
 #include "stdlib.h"
 #include "assert.h"
 #include "string.h"
+#include <stdint.h>
 #include <string>
 #include <vector>
 #include <list>
@@ -10,6 +11,8 @@
 #include <boost/dynamic_bitset.hpp>
 #include <limits.h>
 #include <errno.h>
+#include <emmintrin.h> // Define SSE2 intrinsic functions
+#include <nmmintrin.h> // Define SSE2 intrinsic functions
 
 
 using namespace std;
@@ -57,8 +60,13 @@ void* CALLOC( size_t sz )
 #define FIRST_NEW_HIRE 3
 #define FIRST_SME 4
 
+#define ALIGND(X) X __attribute__((aligned(8)))
+#define PRE_FETCH_T0( x, y )  _mm_prefetch(((char *)(x))+y,_MM_HINT_T0) 
+//#define PRE_FETCH_T0( x, y )  
+#define PRE_FETCH_NTA( x, y )  _mm_prefetch(((char *)(x))+y,_MM_HINT_NTA) 
+
 #define FILE_BUFF_SZ 4*1024*1024
-//#define FILE_BUFF_SZ 4*1024
+//#define FILE_BUFF_SZ 64
 #define RESET_LBUFF \
     lbuff[0] = '\0';\
     llen     = 0
@@ -68,13 +76,13 @@ void* CALLOC( size_t sz )
     flen     = 0
 
 #define DUMP_TO_DISK \
-    RECORD_TIME_SEGMENT("Before Dump");\
     fbuff[flen] = '\0'; \
     fwrite(fbuff, sizeof(char), flen*sizeof(char), f); \
     RESET_FILE_BUFF; \
-    RECORD_TIME_SEGMENT("After Dump");
+    //RECORD_TIME_SEGMENT("After Dump");
     //fflush(f); \
     //fsync(fileno(f)); \
+    //RECORD_TIME_SEGMENT("Before Dump");\
 
 
 #define LIST_ITERATE( iter, l ) \
@@ -94,7 +102,8 @@ void* CALLOC( size_t sz )
 
 typedef struct _FriendNodeDataS {
     int localId;
-    char idStr[64];
+    ALIGND(char idStr[16]);
+    uint8_t len;
     char personKind;
     list<struct _FriendNodeS*> *smeConns;
     //list<struct _FriendNodeS*> *firstConns;
@@ -116,9 +125,11 @@ typedef struct _FriendNodeS {
 
 #ifdef SAFE
 #define idStrOf(x) (x && x->data ? x->data->idStr : "")
+#define strlenOf(x) (x && x->data ? x->data->len : -1)
 #define firstConnsOf(x) (x && x->data ? x->data->firstConns : NULL)
 #else
 #define idStrOf(x)      (x->data->idStr)
+#define strlenOf(x)     (x->data->len)
 #define firstConnsOf(x) (x->data->firstConns)
 #endif
 #define smeConnsOf(x) (x && x->data ? x->data->smeConns : NULL)
@@ -133,11 +144,9 @@ typedef struct _FriendsS {
     int arrCnt;
     int noPeople;
     int impPersons[5];
-    //list<FriendNodeT*> impPersonsList[5];
     list<struct _rootDataS*> rootDataList;
     FriendNodeT** sme_arr;
     list<FriendNodeT*> nh_list;
-//    boost::dynamic_bitset<> *nh_sm_bits;
 } FriendsT;
 
 typedef struct _rootDataS {
@@ -146,7 +155,7 @@ typedef struct _rootDataS {
     list<pair<FriendNodeT *, FriendNodeT*> >*nhList;
 } RootDataT;
 
-RootDataT* create_RootDataT(FriendsT* fr)
+static inline RootDataT* create_RootDataT(FriendsT* fr)
 {
     RootDataT* r = (RootDataT*)malloc(sizeof(RootDataT));
     r->nhBits = new boost::dynamic_bitset<>(fr->impPersons[NEW_HIRE]);
@@ -156,7 +165,7 @@ RootDataT* create_RootDataT(FriendsT* fr)
     return r;
 }
 
-RootDataT* merge_RootDataT(RootDataT* r1, RootDataT* r2)
+static inline RootDataT* merge_RootDataT(RootDataT* r1, RootDataT* r2)
 {
     if( r1 == NULL ) return r2;
     if( r2 == NULL ) return r1;
@@ -171,7 +180,7 @@ RootDataT* merge_RootDataT(RootDataT* r1, RootDataT* r2)
     return r1;
 }
 
-pair<FriendNodeT*, FriendNodeT*>* build_fn_arr(FriendsT* fr, RootDataT* r)
+static inline pair<FriendNodeT*, FriendNodeT*>* build_fn_arr(FriendsT* fr, RootDataT* r)
 {
     pair<FriendNodeT*, FriendNodeT*>* fn_arr = (pair<FriendNodeT*, FriendNodeT*>*)CALLOC(sizeof(pair<FriendNodeT*, FriendNodeT*>)*fr->impPersons[NEW_HIRE]);
     list<pair<FriendNodeT*, FriendNodeT*> >::iterator it;
@@ -184,11 +193,10 @@ pair<FriendNodeT*, FriendNodeT*>* build_fn_arr(FriendsT* fr, RootDataT* r)
     return fn_arr;
 }
 
-void update_RootDataT(FriendsT* fr, RootDataT* rd, FriendNodeT* nh, FriendNodeT* fn, FriendNodeT* sm)
+static inline void update_RootDataT(FriendsT* fr, RootDataT* rd, FriendNodeT* nh, FriendNodeT* fn, FriendNodeT* sm)
 {
     if (nh) {
         (*rd->nhBits)[localIdOf(nh)] = 1;
-        //pair<FriendNodeT*, FriendNodeT*> p = make_pair(nh, fn);
         pair<FriendNodeT*, FriendNodeT*> p;
         p.first = nh;
         p.second = fn;
@@ -211,7 +219,7 @@ void print_RootDataT(RootDataT* r)
 }
 
 
-void create_FriendNodeDataT(FriendsT* fr, FriendNodeT* f, char kind)
+static inline void create_FriendNodeDataT(FriendsT* fr, FriendNodeT* f, char kind)
 {
     assert(kind != OTHERS);
     if (f->data == NULL) {
@@ -219,10 +227,7 @@ void create_FriendNodeDataT(FriendsT* fr, FriendNodeT* f, char kind)
         f->data        = d;
         d->localId     = fr->impPersons[kind]++;
         d->personKind  = kind;
-        //d->firstConns  = new list<FriendNodeT*>();
         d->smeConns    = new list<FriendNodeT*>();
-        //d->connBits    = NULL;
-        //d->connChecked = NULL;
         d->smeBits     = NULL;
 #if 0
         if (kind != SME) {
@@ -230,13 +235,14 @@ void create_FriendNodeDataT(FriendsT* fr, FriendNodeT* f, char kind)
         }
 #endif
         sprintf(f->data->idStr, "%d", f->id);
+        f->data->len = strlen(f->data->idStr);
         //fr->impPersonsList[kind].push_back(f);
         if (kind == NEW_HIRE)
             fr->nh_list.push_back(f);
     }
 }
 
-FriendNodeT* create_FriendNodeT(FriendsT* fr, int i, char kind)
+static inline FriendNodeT* create_FriendNodeT(FriendsT* fr, int i, char kind)
 {
     FriendNodeT* f = NULL;
     f           = (FriendNodeT*)malloc(sizeof(FriendNodeT));
@@ -303,7 +309,7 @@ void printPeople(FriendsT* f)
                     if (fn) {
                         for (int k = 0; k < f->impPersons[SME]; k++) {
                             if (((*r->smBits)[k] == 1) ) {
-                                if ( nh->data->smeBits && (SME_BITSOF(nh)[k] == 0)) {
+                                if ( nh->data->smeBits && (nh->data->smeBits->test(k) == false)) {
                                     SME_BITSOF(nh)[k] = 1;
                                 } else {
                                     nh->data->smeBits = new boost::dynamic_bitset<>(f->impPersons[SME]);
@@ -321,19 +327,17 @@ void printPeople(FriendsT* f)
     printf("\nTotal Roots List: %d", f->rootDataList.size());
     printf("\nTotal Roots: %d\n", cnt);
 }
-void printOneConn(FriendsT* fr,
+static inline void printOneConn(FriendsT* fr,
         FriendNodeT* nh, FriendNodeT* fn, FriendNodeT* sm,
-        char* fbuff, int* flenp, FILE* fl );
+        char* fbuff, int* flenp, FILE* fl ) __attribute__((always_inline));
 
 #define RESET_FILE_BUFF_NEW \
     fbuff[0] = '\0';\
     *flenp   = 0
 #define DUMP_TO_DISK_NEW \
-    RECORD_TIME_SEGMENT("Before Dump");\
     fbuff[*flenp] = '\0'; \
     fwrite(fbuff, sizeof(char), (*flenp)*sizeof(char), fl); \
-    RESET_FILE_BUFF_NEW; \
-    RECORD_TIME_SEGMENT("After Dump");
+    RESET_FILE_BUFF_NEW;
     //fflush(f); \
     //fsync(fileno(f)); \
 
@@ -341,7 +345,7 @@ void printOneConn(FriendsT* fr,
 void dumpConns(FriendsT* f) 
 {
     FriendNodeT* nh = NULL;
-    char  fbuff[FILE_BUFF_SZ];
+    ALIGND(char  fbuff[FILE_BUFF_SZ]);
     int   flen;
     FILE *fl    = fopen("output", "wb");
     int* flenp = &flen;
@@ -352,7 +356,7 @@ void dumpConns(FriendsT* f)
         LIST_ITERATE(jt, smeConnsOf(nh)) {
             FriendNodeT* sme = *jt;
             int k = localIdOf(sme);
-            if ( nh->data->smeBits && (SME_BITSOF(nh)[k] == 0)) {
+            if ( nh->data->smeBits && (nh->data->smeBits->test(k) == false)) {
                 SME_BITSOF(nh)[k] = 1;
                 printOneConn(f, nh, NULL, sme, fbuff, &flen, fl);
             } else if (nh->data->smeBits == NULL) {
@@ -376,9 +380,9 @@ void dumpConns(FriendsT* f)
                     FriendNodeT* fn = p.second;
                     if (fn) {
                         for (int k = 0; k < f->impPersons[SME]; k++) {
-                            if (((*r->smBits)[k] == 1) ) {
+                            if ((r->smBits->test(k)) ) {
                                 FriendNodeT* sme = f->sme_arr[k];
-                                if ( nh->data->smeBits && (SME_BITSOF(nh)[k] == 0)) {
+                                if ( nh->data->smeBits && (nh->data->smeBits->test(k) == false)) {
                                     SME_BITSOF(nh)[k] = 1;
                                     printOneConn(f, nh, fn, sme, fbuff, &flen, fl);
                                 } else if (nh->data->smeBits == NULL) {
@@ -398,9 +402,9 @@ void dumpConns(FriendsT* f)
                     FriendNodeT* nh = it->first;
                     FriendNodeT* fn = it->second;
                     for (int k = 0; k < f->impPersons[SME]; k++) {
-                        if (((*r->smBits)[k] == 1) ) {
+                        if (r->smBits->test(k)) {
                             FriendNodeT* sme = f->sme_arr[k];
-                            if ( nh->data->smeBits && (SME_BITSOF(nh)[k] == 0)) {
+                            if ( nh->data->smeBits && (nh->data->smeBits->test(k) == false)) {
                                 SME_BITSOF(nh)[k] = 1;
                                 printOneConn(f, nh, fn, sme, fbuff, &flen, fl);
                             } else if (nh->data->smeBits == NULL) {
@@ -456,7 +460,6 @@ FriendNodeT* addPerson( FriendsT* f, int id, char type)
 }
 
 
-//int cnt_cn = 0;
 FriendNodeT* findRoot( FriendsT* fr, FriendNodeT* i)
 {
     FriendNodeT* root = i;
@@ -470,7 +473,6 @@ FriendNodeT* findRoot( FriendsT* fr, FriendNodeT* i)
         FriendNodeT* n = p->root;
         p->root = root;
         p = n;
-        //cnt_cn++;
     }
     return root;
 }
@@ -497,20 +499,6 @@ void create_conn(FriendsT* fr, FriendNodeT* p, FriendNodeT* q)
         rootP->rootData = merge_RootDataT(rootP->rootData, rootQ->rootData);
     }
 }
-
-#if 0
-void update_sme_on_first_sme(FriendsT* fr, FriendNodeT *fsme, FriendNodeT* sme, int v)
-{
-    if ( fsme->data->connBits == NULL) {
-        fsme->data->connBits = new boost::dynamic_bitset<>(fr->impPersons[SME]);
-    }
-    if ( fsme->data->connChecked == NULL) {
-        fsme->data->connChecked = new boost::dynamic_bitset<>(fr->impPersons[SME]);
-    }
-    CONN_BITS(fsme)[localIdOf(sme)] = v;
-    CONN_CHECKED(fsme)[localIdOf(sme)] = 1;
-}
-#endif
 
 void update_terminal_conn(FriendsT* fr, FriendNodeT* lf, FriendNodeT* rf)
 {
@@ -550,13 +538,6 @@ void update_terminal_conn(FriendsT* fr, FriendNodeT* lf, FriendNodeT* rf)
             update_RootDataT(fr, root->rootData, NULL, NULL, rf);
         }
     }
-#if 0
-    if (NODE_IS_SME(rf) && !NODE_IS_SME(lf)) {
-        update_sme_on_first_sme(fr, lf, rf, 1);
-    } else if (NODE_IS_SME(lf) && !NODE_IS_SME(rf)) {
-        update_sme_on_first_sme(fr, rf, lf, 1);
-    }
-#endif
     if (NODE_IS_SME(lf)) {
         fr->sme_arr[localIdOf(lf)] = lf;
     }
@@ -564,20 +545,8 @@ void update_terminal_conn(FriendsT* fr, FriendNodeT* lf, FriendNodeT* rf)
         fr->sme_arr[localIdOf(rf)] = rf;
     }
     if (NODE_IS_NEW_HIRE(lf) && NODE_IS_SME(rf)) {
-#if 0
-        if (NH_SM_BITSOF(fr)[localIdOf(lf)] == 0) {
-            fr->nh_list.push_back(lf);
-            NH_SM_BITSOF(fr)[localIdOf(lf)] = 1;
-        }
-#endif
         smeConnsOf(lf)->push_back(rf);
     } else if (NODE_IS_SME(lf) && NODE_IS_NEW_HIRE(rf)) {
-#if 0
-        if (NH_SM_BITSOF(fr)[localIdOf(rf)] == 0) {
-            fr->nh_list.push_back(rf);
-            NH_SM_BITSOF(fr)[localIdOf(rf)] = 1;
-        }
-#endif
         smeConnsOf(rf)->push_back(lf);
     }
 }
@@ -586,6 +555,7 @@ void parseLine(char* buf, FriendsT* fr, int type, bool isgraph, int lines)
 {
     char* endPtr = NULL;
     char* str = buf;
+    PRE_FETCH_T0( buf, 128);
     if (isgraph == false) {
         int id = 0;
         errno = 0;
@@ -629,7 +599,7 @@ char* readEntireFile( FILE* f, long* size )
     lSize = ftell (f);
     rewind (f);
     // allocate memory to contain the whole file:
-    buffer = (char*) malloc (sizeof(char)*lSize);
+    buffer = (char*) _mm_malloc(sizeof(char)*lSize, sizeof(char));
 
     // copy the file into the buffer:
     result = fread (buffer,1,lSize,f);
@@ -678,41 +648,51 @@ void parseFile(char* fileName, FriendsT* fr, int type, bool isgraph)
         }
     }
     RECORD_TIME_SEGMENT("File Parse");
-    free(allFileContent);
+    _mm_free(allFileContent);
 }
 
-void printOneConn(FriendsT* fr,
+// SSE2 optimized memcpy()
+void *MemCpySse2(void *__restrict b, const void *__restrict a, size_t n)
+{
+    char *s1 = (char*)b;
+    const char *s2 = (const char*)a;
+    for(; 0<n; --n)*s1++ = *s2++;
+    return b;
+}
+
+//#define MEMCPY(x,y,z) MemCpySse2( x, y, z)
+#define MEMCPY(x,y,z) memcpy( x, y, z)
+
+static inline void printOneConn(FriendsT* fr,
         FriendNodeT* nh, FriendNodeT* fn, FriendNodeT* sm,
         char* fbuff, int* flenp, FILE* fl )
 {
-    char  lbuff[128];
-    int   llen;
     int len = 0;
-    RESET_LBUFF;
-    char* lstr = lbuff;
+    char* lstr = fbuff + *flenp;
+    PRE_FETCH_T0( lstr, 128);
     if (fn) {
-        len = strlen(idStrOf(nh)); memcpy(lstr, idStrOf(nh), len); lstr += len; llen += len;
-        *lstr = '-'; lstr++; llen++;
-        *lstr = '-'; lstr++; llen++;
-        len = strlen(idStrOf(fn)); memcpy(lstr, idStrOf(fn), len); lstr += len; llen += len;
-        *lstr = '-'; lstr++; llen++;
-        *lstr = '-'; lstr++; llen++;
-        len = strlen(idStrOf(sm)); memcpy(lstr, idStrOf(sm), len); lstr += len; llen += len;
+        PRE_FETCH_T0( idStrOf(nh), 16);
+        PRE_FETCH_T0( idStrOf(fn), 16);
+        PRE_FETCH_T0( idStrOf(sm), 16);
+        len = strlenOf((nh)); MEMCPY(lstr, idStrOf(nh), len); lstr += len; (*flenp) += len;
+        *lstr = '-'; lstr++; (*flenp)++;
+        *lstr = '-'; lstr++; (*flenp)++;
+        len = strlenOf((fn)); MEMCPY(lstr, idStrOf(fn), len); lstr += len; (*flenp) += len;
+        *lstr = '-'; lstr++; (*flenp)++;
+        *lstr = '-'; lstr++; (*flenp)++;
+        len = strlenOf((sm)); MEMCPY(lstr, idStrOf(sm), len); lstr += len; (*flenp) += len;
     } else {
-        len = strlen(idStrOf(nh)); memcpy(lstr, idStrOf(nh), len); lstr += len; llen += len;
-        *lstr = '-'; lstr++; llen++;
-        *lstr = '-'; lstr++; llen++;
-        len = strlen(idStrOf(sm)); memcpy(lstr, idStrOf(sm), len); lstr += len; llen += len;
+        PRE_FETCH_T0( idStrOf(nh), 16);
+        PRE_FETCH_T0( idStrOf(sm), 16);
+        len = strlenOf((nh)); MEMCPY(lstr, idStrOf(nh), len); lstr += len; (*flenp) += len;
+        *lstr = '-'; lstr++; (*flenp)++;
+        *lstr = '-'; lstr++; (*flenp)++;
+        len = strlenOf((sm)); MEMCPY(lstr, idStrOf(sm), len); lstr += len; (*flenp) += len;
     }
-    *lstr = '\n'; lstr++; llen++;
+    *lstr = '\n'; lstr++; (*flenp)++;
     *lstr = '\0';
-    if (((*flenp) + llen) < FILE_BUFF_SZ) {
-        memcpy(fbuff + (*flenp), lbuff, llen);
-        (*flenp) += llen;
-    } else {
+    if ((*flenp) > (FILE_BUFF_SZ - 128 )) {
         DUMP_TO_DISK_NEW;
-        memcpy(fbuff + (*flenp), lbuff, llen);
-        (*flenp) += llen;
     }
 }
 
